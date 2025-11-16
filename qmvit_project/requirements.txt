@@ -1,0 +1,6 @@
+torch
+torchvision
+pennylane
+timm
+opencv-python
+scikit-learn
