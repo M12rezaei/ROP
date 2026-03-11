@@ -5,7 +5,7 @@ import re
 # ==================================================
 # BASE PATHS
 # ==================================================
-DATA_DIR = Path(r"C:\Users\m12re\Downloads\Retinopathy_of_Prematurity\data")
+DATA_DIR = Path(r"C:\Users\m12re\ROP\qmvit_project\data")
 
 ZIP_XLSX    = DATA_DIR / "zip information.xlsx"
 INFANT_XLSX = DATA_DIR / "infant_retinal_database_info.xlsx"
@@ -13,15 +13,22 @@ INFANT_XLSX = DATA_DIR / "infant_retinal_database_info.xlsx"
 STAGE_CSV = DATA_DIR / "stage_data.csv"
 
 # Source Folders
-STAGE_MASK_ROOT = DATA_DIR / "unet_masks/stage"
+STAGE_MASK_ROOT = {
+    0: DATA_DIR / "mask/stage0",
+    1: DATA_DIR / "mask/stage1",
+    2: DATA_DIR / "mask/stage2",
+    3: DATA_DIR / "mask/stage3",
+    4: DATA_DIR / "mask/stage4",
+    5: DATA_DIR / "mask/stage5",
+}
 
 STAGE_DIRS = {
-    0: DATA_DIR / "classification/stages/stage0",
-    1: DATA_DIR / "classification/stages/stage1",
-    2: DATA_DIR / "classification/stages/stage2",
-    3: DATA_DIR / "classification/stages/stage3",
-    4: DATA_DIR / "classification/stages/stage4",
-    5: DATA_DIR / "classification/stages/stage5",
+    0: DATA_DIR / "stage/stage0",
+    1: DATA_DIR / "stage/stage1",
+    2: DATA_DIR / "stage/stage2",
+    3: DATA_DIR / "stage/stage3",
+    4: DATA_DIR / "stage/stage4",
+    5: DATA_DIR / "stage/stage5",
 }
 
 # ==================================================
@@ -111,7 +118,7 @@ def build_stage_csv(clinical_df, global_ga, global_bw):
                 bw = global_bw
 
             # Match vessel mask
-            mask = find_mask_by_filename(STAGE_MASK_ROOT, img.stem)
+            mask = find_mask_by_filename(STAGE_MASK_ROOT[stage], img.stem)
             if mask is None:
                 skipped_no_mask += 1
                 continue
