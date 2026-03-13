@@ -5,7 +5,7 @@ import re
 # ==================================================
 # BASE PATHS
 # ==================================================
-DATA_DIR = Path(r"C:\Users\m12re\ROP\qmvit_project\data")
+DATA_DIR = Path(r"C:\Users\rezaeim\ROP-1\qmvit_project\data")
 
 ZIP_XLSX    = DATA_DIR / "zip information.xlsx"
 INFANT_XLSX = DATA_DIR / "infant_retinal_database_info.xlsx"
