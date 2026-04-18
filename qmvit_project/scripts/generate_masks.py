@@ -8,9 +8,9 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-# =========================================
-# Vessel Probability Map (Cleaned)
-# =========================================
+# ========================================
+# Vessel Probability Map 
+# ========================================
 def extract_vessel_prob_map(img_path):
     img = cv2.imread(str(img_path))
     if img is None:
