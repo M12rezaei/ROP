@@ -1,6 +1,6 @@
 # CPU/GPU-FRIENDLY ROP STAGE CLASSIFICATION
 # Using cached .pt files (images + masks + clinical data)
-# Ensemble: MaxViT + EfficientNet + Ben Graham + Mask
+# Ensemble: convNext_tiny + EfficientNet + Mask
 # Includes MIL, Grad-CAM, ECE, Temp Scaling, metrics, patient aggregation
 import os
 import argparse
