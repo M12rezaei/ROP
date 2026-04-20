@@ -13,7 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 import timm
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import f1_score, cohen_kappa_score, accuracy_score, roc_auc_score
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, precision_recall_curve, confusion_matrix
@@ -22,11 +22,17 @@ from torch.utils.data import WeightedRandomSampler
 import json
 from tqdm import tqdm
 import cv2
+import hashlib
 
 
 warnings.filterwarnings("ignore")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 NUM_CLASSES = 3
+def tensor_hash(t):
+    return hashlib.md5(t.cpu().numpy().tobytes()).hexdigest()
+
+def tensor_hash(t):
+    return hashlib.md5(t.cpu().numpy().tobytes()).hexdigest()
 
 # --------------------------
 # Rotations
@@ -136,6 +142,15 @@ class ROPDatasetPT(Dataset):
         if img.shape[0] == 3:
             img = torch.cat([img, torch.zeros(1, 224, 224)], dim=0)
 
+        # --- DOUBLE ABLATION: ZERO OUT THE MASK CHANNEL ---
+        # If the image has 4 channels, we set the 4th one (index 3) to zero
+        #if img.shape[0] == 4:
+        #    img[3, :, :] = 0.0
+        #elif img.shape[0] == 3:
+            # If it's only 3 channels, we still pad it to 4 with zeros
+            # so the model architecture (which expects 4) doesn't crash.
+        #   img = torch.cat([img, torch.zeros(1, 224, 224)], dim=0)
+
         # -------------------------
         # AUGMENTATION (TRAIN ONLY)
         # -------------------------
@@ -164,13 +179,6 @@ class ROPDatasetPT(Dataset):
             if np.random.rand() < 0.3:
               img = random_gamma(img)
 
-        # =========================
-        # NORMALIZATION (ADD HERE)
-        # =========================
-        mean = torch.tensor([0.485, 0.456, 0.406, 0.0], device=img.device).view(4,1,1)
-        std  = torch.tensor([0.229, 0.224, 0.225, 1.0], device=img.device).view(4,1,1)
-
-        img = (img - mean) / std
 
         # -------------------------
         # Clinical Data
@@ -182,6 +190,8 @@ class ROPDatasetPT(Dataset):
             (ga - 22) / 18,
             (bw - 400) / 2100
         ], dtype=torch.float32)
+
+        #clinical = torch.zeros(2, dtype=torch.float32)
 
         # -------------------------
         # Label → Ordinal
@@ -411,17 +421,10 @@ class GradCAM:
         self.grad = None
         self.act = None
 
-        # ---- safer hook target ----
-        self.target_layer = self._find_last_conv_layer(model)
+        self.target_layer = model.conv_head1
 
         self.fwd_handle = self.target_layer.register_forward_hook(self.forward_hook)
         self.bwd_handle = self.target_layer.register_full_backward_hook(self.backward_hook)
-
-    def _find_last_conv_layer(self, model):
-        for module in reversed(list(model.modules())):
-            if isinstance(module, nn.Conv2d):
-                return module
-        raise ValueError("No Conv2d layer found for GradCAM")
 
     def forward_hook(self, module, input, output):
         self.act = output
@@ -430,20 +433,24 @@ class GradCAM:
         self.grad = grad_out[0]
 
     def generate(self, x, clinical, cls):
+        self.model.eval()
         self.model.zero_grad(set_to_none=True)
 
         logits_ord = self.model(x, clinical)
         probs = ordinal_probs_from_logits(logits_ord)
 
-        # stable class score
-        score = probs[:, cls]
+        score = probs[:, cls].sum()
+        score.backward()
 
-        score.sum().backward()
+        if self.grad is None or self.act is None:
+            raise RuntimeError("GradCAM hooks failed")
 
         weights = self.grad.mean(dim=(2,3), keepdim=True)
         cam = (weights * self.act).sum(1)
 
         cam = F.relu(cam)
+
+        cam = cam - cam.min()
         cam = cam / (cam.max() + 1e-6)
 
         return cam.detach().cpu().numpy()
@@ -451,6 +458,35 @@ class GradCAM:
     def remove_hooks(self):
         self.fwd_handle.remove()
         self.bwd_handle.remove()
+# ========================
+# Duplicate Detection
+# ========================
+def check_duplicates(train_paths, val_paths):
+    print("\n[CHECK] Duplicate image detection...")
+
+    train_hashes = {}
+    val_hashes = {}
+
+    # hash train
+    for p in train_paths:
+        data = torch.load(p, map_location="cpu")
+        h = tensor_hash(data["img"])
+        train_hashes[h] = p
+
+    # check val against train
+    duplicates = []
+    for p in val_paths:
+        data = torch.load(p, map_location="cpu")
+        h = tensor_hash(data["img"])
+
+        if h in train_hashes:
+            duplicates.append((p, train_hashes[h]))
+
+    print(f"Duplicates found: {len(duplicates)}")
+
+    if len(duplicates) > 0:
+        print("Example duplicate:")
+        print(duplicates[0])
 # =========================
 # Aggregate patient-level metrics
 # =========================
@@ -511,7 +547,7 @@ def patient_level_auc(df_val, stage_probs, num_classes=NUM_CLASSES):
         return roc_auc_score(
             patient_labels,
             patient_probs,
-            multi_class="ovr", 
+            multi_class="ovr",
             average="macro"
         )
     except Exception as e:
@@ -628,59 +664,68 @@ def ordinal_probs_from_logits(logits):
     probs[:, -1] = cumulative[:, -1]
 
     return torch.clamp(probs, 1e-6, 1.0)
+
+# ========================
+# Plot random samples per class (for sanity check)
+# ========================
+def plot_random_samples(pt_paths, num_per_class=5):
+
+    class_samples = {0: [], 1: [], 2: []}
+
+    for p in pt_paths:
+        data = torch.load(p, map_location="cpu")
+        label = int(data["label"])
+
+        if len(class_samples[label]) < num_per_class:
+            class_samples[label].append(data["img"][:3])  # RGB only
+
+        if all(len(v) >= num_per_class for v in class_samples.values()):
+            break
+
+    for cls, imgs in class_samples.items():
+        plt.figure(figsize=(10, 5))
+        for i, img in enumerate(imgs):
+            plt.subplot(4, 5, i+1)
+            img_np = img.numpy().transpose(1,2,0)
+            plt.imshow(img_np)
+            plt.axis("off")
+        plt.suptitle(f"Class {cls}")
+        plt.show()
 # =================
 # Train
 # =================
-def filter_paths(pt_dir, df):
-    # Convert all CSV patient_ids to strings and strip whitespace
-    allowed_ids = set(df["patient_id"].astype(str).str.strip().values)
+def filter_paths(df_subset, path_to_pid):
+    allowed_ids = set(df_subset["patient_id"].astype(str))
 
-    all_paths = [
-        os.path.join(pt_dir, f)
-        for f in os.listdir(pt_dir)
-        if f.endswith(".pt") and "index" not in f.lower()
+    return [
+        p for p in path_to_pid.keys()
+        if path_to_pid[p] in allowed_ids
     ]
 
-    filtered = []
-    print(f"Scanning {len(all_paths)} .pt files in {pt_dir}...")
-
-    for p in all_paths:
-        try:
-            # We use weights_only=False because these are custom dicts
-            data = torch.load(p, map_location="cpu", weights_only=False)
-
-            # Ensure we read the ID as a clean string
-            pid = str(data.get("patient_id", "")).strip()
-
-            if pid in allowed_ids:
-                filtered.append(p)
-        except Exception as e:
-            print(f"Error loading {p}: {e}")
-            continue
-
-    print(f"Matched {len(filtered)} images for the current split.")
-    return filtered
-def train_fold(df, pt_dir, fold, args, class_weights=None, patience=5):
+def train_fold(df, pt_dir, fold, args, path_to_pid, class_weights=None, patience=5):
 
     out = os.path.join(args.out_dir, f"fold_{fold}")
     os.makedirs(out, exist_ok=True)
 
-    df_train = df[df.fold != fold].copy()
-    df_val   = df[df.fold == fold].copy()
+    df_train = df[df["fold"] != fold].copy()
+    df_val   = df[df["fold"] == fold].copy()
 
-    # -------------------------
-    # PATHS
-    # -------------------------
-    train_paths = filter_paths(pt_dir, df_train)
-    val_paths   = filter_paths(pt_dir, df_val)
+    train_paths = filter_paths(df_train, path_to_pid)
+    val_paths   = filter_paths(df_val, path_to_pid)
+
+    check_duplicates(train_paths, val_paths)
 
     # -------------------------
     # SAMPLER
     # -------------------------
-    labels = df_train["label"].values
-    class_count = np.bincount(labels, minlength=NUM_CLASSES)
+    train_labels = np.array([
+        df[df["patient_id"] == path_to_pid[p]]["label"].values[0]
+        for p in train_paths
+    ])
+    class_count = np.bincount(train_labels, minlength=NUM_CLASSES)
+
     weights = 1.0 / (class_count + 1e-6)
-    sample_weights = weights[labels]
+    sample_weights = weights[train_labels]
 
     sampler = WeightedRandomSampler(
         sample_weights,
@@ -729,15 +774,15 @@ def train_fold(df, pt_dir, fold, args, class_weights=None, patience=5):
     def compute_loss(logits, targets, weights=None, smoothing=0.1):
         # Smooth targets: 1 -> 0.95, 0 -> 0.05
         targets = targets.float() * (1 - smoothing) + 0.5 * smoothing
-        
+
         loss = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
-        
+
         if weights is not None:
             true_ints = targets.sum(dim=1).round().long() # round because of smoothing
             true_ints = torch.clamp(true_ints, 0, NUM_CLASSES - 1)
             batch_weights = weights[true_ints].unsqueeze(1)
             loss = loss * batch_weights
-            
+
         return loss.mean()
 
     def decode(logits):
@@ -762,11 +807,20 @@ def train_fold(df, pt_dir, fold, args, class_weights=None, patience=5):
         "pat_acc": [],
         "pat_auc": []
     }
+    for f in range(args.folds):
+        train_patients = set(df[df.fold != f]['patient_id'])
+        val_patients = set(df[df.fold == f]['patient_id'])
+        overlap = train_patients.intersection(val_patients)
+        print(f"Fold {f} Patient Overlap: {len(overlap)}")
 
     # =========================
     # TRAIN LOOP
     # =========================
     for epoch in range(1, args.epochs + 1):
+
+        if fold == 0 and epoch == 1:
+            print("\n[DEBUG] Visual inspection...")
+            plot_random_samples(train_paths)
 
         # ========= TRAIN =========
         model.train()
@@ -802,14 +856,14 @@ def train_fold(df, pt_dir, fold, args, class_weights=None, patience=5):
         all_preds, all_probs, all_true, all_pids = [], [], [], []
 
         with torch.no_grad():
-            for imgs, clin, targets, pids in val_loader:
+            for batch_idx, (imgs, clin, targets, pids) in enumerate(val_loader):
 
                 imgs = imgs.to(DEVICE)
                 clin = clin.to(DEVICE)
                 targets = targets.to(DEVICE)
 
                 logits = model(imgs, clin)
-                
+
                 # Compute loss using the ordinal targets
                 loss = compute_loss(logits, targets, class_weights)
                 val_loss += loss.item()
@@ -821,12 +875,12 @@ def train_fold(df, pt_dir, fold, args, class_weights=None, patience=5):
 
                 all_preds.append(preds.cpu().numpy())
                 all_probs.append(probs.cpu().numpy())
-                
+
                 # FIX: Convert ordinal vector [1, 1, 0] back to integer class 2
                 # We sum the 1s across the last dimension
                 true_ints = targets.sum(dim=1).long()
                 all_true.append(targets.sum(dim=1).long().cpu().numpy())
-                
+
                 all_pids.extend(pids)
 
         val_loss /= len(val_loader)
@@ -931,6 +985,32 @@ def train_fold(df, pt_dir, fold, args, class_weights=None, patience=5):
     stage_probs = np.concatenate(stage_probs)
     stage_true = np.concatenate(stage_true)
     preds = np.concatenate(preds_all)
+
+    # =========================
+    # SENSITIVITY-BASED THRESHOLDS (Stage 2 focus)
+    # =========================
+    thresholds = sensitivity_thresholds(
+        stage_true,
+        stage_probs,
+        target_sens=0.95,
+        critical_stages=[2]
+    )
+
+    print("Sensitivity thresholds:", thresholds)
+
+    df_val_images = pd.DataFrame({
+        "patient_id": stage_pids,
+        "label": stage_true
+    })
+
+    df_flags = patient_sensitivity_flags(
+        df_val_images,
+        stage_probs,
+        thresholds,
+        critical_stages=[2]
+    )
+
+    df_flags.to_csv(os.path.join(out, "patient_flags.csv"), index=False)
     # ================= PLOTS =================
     plot_confusion(stage_true, preds, list(range(NUM_CLASSES)),
                    os.path.join(out, "confusion_best.png"))
@@ -944,7 +1024,6 @@ def train_fold(df, pt_dir, fold, args, class_weights=None, patience=5):
         else:
             auc = roc_auc_score(y_bin, stage_probs[:, s])
 
-        precision, recall, _ = precision_recall_curve(y_bin, stage_probs[:, s])
         precision, recall, _ = precision_recall_curve(y_bin, stage_probs[:, s])
 
         plt.figure()
@@ -975,16 +1054,54 @@ def train_fold(df, pt_dir, fold, args, class_weights=None, patience=5):
         img_np = img[0][:3].cpu().numpy().transpose(1,2,0)
         img_np = (img_np - img_np.min()) / (img_np.max() + 1e-6)
 
+        # Resize
         cam = cv2.resize(cam, (img_np.shape[1], img_np.shape[0]))
-        cam = cv2.GaussianBlur(cam, (11,11), 0)
 
-        cam = (cam - cam.min()) / (cam.max() + 1e-6)
+        # =========================
+        # HARD RETINA MASK (circle)
+        # =========================
+        h, w = cam.shape
+        y, x_grid = np.ogrid[:h, :w]
+        center = (h // 2, w // 2)
+        radius = min(center) * 0.95
 
-        heatmap = cv2.applyColorMap(np.uint8(255*cam), cv2.COLORMAP_JET)
-        heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB) / 255.0
+        hard_mask = ((x_grid - center[1])**2 + (y - center[0])**2 <= radius**2).astype(np.float32)
 
-        # STRONGER OVERLAY
-        overlay = np.clip(0.6 * img_np + 0.4 * heatmap, 0, 1)
+        # =========================
+        # SOFT MASK (image-based fallback)
+        # =========================
+        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        _, soft_mask = cv2.threshold(gray, 0.05, 1, cv2.THRESH_BINARY)
+        soft_mask = cv2.GaussianBlur(soft_mask.astype(np.float32), (31,31), 0)
+        soft_mask = soft_mask / (soft_mask.max() + 1e-6)
+
+        # =========================
+        # COMBINE MASKS
+        # =========================
+        final_mask = hard_mask * soft_mask
+
+        cam = cam * final_mask
+
+        # =========================
+        # SMOOTH CAM (CRITICAL)
+        # =========================
+        cam = cv2.medianBlur((cam*255).astype(np.uint8), 9) / 255.0
+        cam = cv2.GaussianBlur(cam, (21,21), 0)
+
+        # =========================
+        # NORMALIZE AGAIN
+        # =========================
+        cam = cam - cam.min()
+        cam = cam / (cam.max() + 1e-6)
+
+        # enforce mask again
+        cam = cam * final_mask
+
+        heatmap = cv2.applyColorMap(np.uint8(255 * cam), cv2.COLORMAP_JET)
+        heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
+
+        overlay = 0.6 * img_np + 0.4 * (heatmap / 255.0)
+        overlay = np.clip(overlay, 0, 1)
 
         plt.imshow(overlay)
         plt.title(f"GT:{label.argmax().item()} Pred:{preds[idx]}")
@@ -994,7 +1111,7 @@ def train_fold(df, pt_dir, fold, args, class_weights=None, patience=5):
 
     gradcam.remove_hooks()
 
-def final_training(df, args, class_weights=None):
+def final_training(df, args,path_to_pid, class_weights= None):
     print("\n=== FINAL TRAINING ON FULL DATASET ===")
 
     model = ROPNet().to(DEVICE)
@@ -1005,7 +1122,7 @@ def final_training(df, args, class_weights=None):
     )
     scaler = torch.cuda.amp.GradScaler(enabled=(DEVICE == "cuda"))
 
-    all_paths = filter_paths(args.pt_dir, df)
+    all_paths = filter_paths(df, path_to_pid)
 
     train_loader = DataLoader(
         ROPDatasetPT(all_paths, augment=True),
@@ -1024,14 +1141,19 @@ def final_training(df, args, class_weights=None):
     )
 
     # =========================
-    # LOSS (DEFINED HERE)
+    # LOSS
     # =========================
-    def compute_loss(logits, targets, weights=None):
-        loss = F.binary_cross_entropy_with_logits(logits, targets)
+    def compute_loss(logits, targets, weights=None, smoothing=0.1):
+        # Smooth targets: 1 -> 0.95, 0 -> 0.05
+        targets = targets.float() * (1 - smoothing) + 0.5 * smoothing
+
+        loss = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
 
         if weights is not None:
-            cls = targets.sum(dim=1).long().clamp(0, NUM_CLASSES - 1)
-            loss = loss * weights[cls].unsqueeze(1)
+            true_ints = targets.sum(dim=1).round().long() # round because of smoothing
+            true_ints = torch.clamp(true_ints, 0, NUM_CLASSES - 1)
+            batch_weights = weights[true_ints].unsqueeze(1)
+            loss = loss * batch_weights
 
         return loss.mean()
 
@@ -1083,7 +1205,7 @@ def final_training(df, args, class_weights=None):
 
             logits_all.append(logits.cpu())
 
-            # FIX: ordinal → class index
+            # ordinal → class index
             labels_all.append(stage.sum(dim=1).long().cpu())
 
     logits_all = torch.cat(logits_all).to(DEVICE)
@@ -1103,7 +1225,9 @@ def final_training(df, args, class_weights=None):
 # MAIN
 # =========================
 def main():
+    set_seed(42)
     parser = argparse.ArgumentParser()
+    parser.add_argument("--shuffle_labels", action="store_true")
     parser.add_argument("--pt_dir", required=True, help="Directory with cached .pt files")
     parser.add_argument("--csv_file", required=True, help="CSV with patient_id, label for folds")
     parser.add_argument("--folds", type=int, default=5)
@@ -1112,58 +1236,118 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--out_dir", default="./stage_results_final")
     args = parser.parse_args()
+    print("\n=========================")
+    print("ROP TRAINING STARTED")
+    print("=========================\n")
 
     # =========================
-    # SETUP
+    # LOAD CSV
     # =========================
-    os.makedirs(args.out_dir, exist_ok=True)
-
     df = pd.read_csv(args.csv_file).dropna()
 
-    # Ensure labels are integers
-    df["label"] = df["label"].astype(int)
+    df["patient_id"] = df["patient_id"].astype(str).str.strip()
+    df["label"] = df["label"].apply(remap_stage)
 
     print(f"Loaded {len(df)} samples")
 
     # =========================
+    # SANITY CHECK
+    # =========================
+    if args.shuffle_labels:
+        print("\n[WARNING] Shuffling labels for sanity check...")
+        df["label"] = np.random.permutation(df["label"].values)
+
+    # =========================
+    # LOAD PT FILES (CACHE SAFE)
+    # =========================
+    cache_file = os.path.join(args.out_dir, "pt_cache_paths.pt")
+
+    if os.path.exists(cache_file):
+        print("\n[CACHE] Loading paths...")
+        all_paths = torch.load(cache_file)
+    else:
+        all_paths = [
+            os.path.join(args.pt_dir, f)
+            for f in os.listdir(args.pt_dir)
+            if f.endswith(".pt") and "index" not in f.lower()
+        ]
+        torch.save(all_paths, cache_file)
+
+    print(f"[INFO] Total images: {len(all_paths)}")
+
+    # =========================
+    # BUILD PATH → PATIENT MAP
+    # =========================
+    path_to_pid = {}
+    valid_paths = []
+
+    print("\n[INFO] Mapping patient IDs...")
+
+    for p in tqdm(all_paths):
+        try:
+            data = torch.load(p, map_location="cpu")
+            pid = str(data["patient_id"]).strip()
+            path_to_pid[p] = pid
+            valid_paths.append(p)
+        except:
+            continue
+
+    all_paths = valid_paths
+    print(f"[INFO] Valid images: {len(all_paths)}")
+
+    # =========================
     # PATIENT-LEVEL SPLIT
     # =========================
-    df["fold"] = -1
+    patient_df = df[['patient_id', 'label']].drop_duplicates()
 
-    pat = df.groupby("patient_id")["label"].max().reset_index()
+    skf = StratifiedKFold(n_splits=args.folds, shuffle=True, random_state=42)
 
-    sgkf = StratifiedGroupKFold(n_splits=args.folds, shuffle=True, random_state=42)
+    patient_df["fold"] = -1
 
-    for f, (_, val_idx) in enumerate(
-        sgkf.split(pat, pat["label"], groups=pat["patient_id"])
+    for fold, (_, val_idx) in enumerate(
+        skf.split(patient_df["patient_id"], patient_df["label"])
     ):
-        val_pids = pat.loc[val_idx, "patient_id"]
-        df.loc[df["patient_id"].isin(val_pids), "fold"] = f
+        val_pids = patient_df.iloc[val_idx]["patient_id"].values
+        patient_df.loc[patient_df["patient_id"].isin(val_pids), "fold"] = fold
 
+    # attach fold back to image dataframe
+    df = df.merge(patient_df[['patient_id', 'fold']], on="patient_id", how="left")
     # =========================
-    # LEAKAGE CHECK (CRITICAL)
+    # LEAKAGE CHECK
     # =========================
     for f in range(args.folds):
         train_pids = set(df[df.fold != f]["patient_id"])
         val_pids = set(df[df.fold == f]["patient_id"])
 
-        overlap = train_pids.intersection(val_pids)
-        if len(overlap) > 0:
-            raise ValueError(f"[LEAKAGE] Fold {f} has overlap: {overlap}")
+        overlap = train_pids & val_pids
+        if overlap:
+            raise ValueError(f"[LEAKAGE] Fold {f}: {len(overlap)} patients overlap!")
 
-    print(" No patient-level leakage detected")
+    print("No patient-level leakage detected")
 
     # =========================
-    # CROSS-VALIDATION
+    # CROSS VALIDATION
     # =========================
     for f in range(args.folds):
-        print(f"\n{'='*40}")
-        print(f"STARTING FOLD {f}")
-        print(f"{'='*40}")
+
+        print(f"\n====================")
+        print(f"FOLD {f} START")
+        print(f"====================")
 
         train_df = df[df.fold != f]
+        val_df = df[df.fold == f]
 
-        # Compute class weights ONLY on training data
+        train_pids = set(train_df["patient_id"])
+        val_pids = set(val_df["patient_id"])
+
+        train_paths = [p for p in all_paths if path_to_pid[p] in train_pids]
+        val_paths = [p for p in all_paths if path_to_pid[p] in val_pids]
+
+        print(f"Train images: {len(train_paths)} | Val images: {len(val_paths)}")
+
+        # =========================
+        # CLASS WEIGHTS (STABLE)
+        # =========================
         class_counts = (
             train_df["label"]
             .value_counts()
@@ -1172,21 +1356,26 @@ def main():
             .values
         )
 
-        # Use sqrt weighting (stable)
         weights = 1.0 / np.sqrt(class_counts + 1e-6)
         weights = (weights / weights.sum()) * NUM_CLASSES
 
-        class_weights = torch.tensor(weights, dtype=torch.float32).to(DEVICE)
+        class_weights = torch.tensor(weights, dtype=torch.float32, device=DEVICE)
 
-        print(f"[Fold {f}] Class counts: {class_counts}")
-        print(f"[Fold {f}] Class weights: {weights}")
+        print(f"Class counts: {class_counts}")
+        print(f"Class weights: {weights}")
 
-        train_fold(df, args.pt_dir, f, args, class_weights)
+        try:
+            train_fold(df, args.pt_dir, f, args, path_to_pid, class_weights)
+        except Exception as e:
+            print(f"[ERROR] Fold {f} failed: {e}")
+            continue
 
     # =========================
-    # FINAL TRAINING ON FULL DATASET
+    # FINAL TRAINING
     # =========================
-    print("\n=== FINAL TRAINING ON FULL DATASET ===")
+    print("\n=========================")
+    print("FINAL TRAINING (FULL DATA)")
+    print("=========================\n")
 
     class_counts = (
         df["label"]
@@ -1199,15 +1388,15 @@ def main():
     weights = 1.0 / np.sqrt(class_counts + 1e-6)
     weights = (weights / weights.sum()) * NUM_CLASSES
 
-    class_weights = torch.tensor(weights, dtype=torch.float32).to(DEVICE)
+    class_weights = torch.tensor(weights, dtype=torch.float32, device=DEVICE)
 
-    print(f"[FINAL] Class counts: {class_counts}")
-    print(f"[FINAL] Class weights: {weights}")
+    print(f"Final class weights: {weights}")
 
-    final_training(df, args, class_weights)
+    args.all_paths = all_paths
 
-    print("\n TRAINING COMPLETE")
+    final_training(df, args,path_to_pid, class_weights)
 
+    print("\nTRAINING COMPLETE")
 
 if __name__ == "__main__":
     main()
