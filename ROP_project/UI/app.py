@@ -11,7 +11,7 @@ import numpy as np
 import cv2
 from PIL import Image
 #from torchcam.methods import GradCAM
-from scripts.Stage_final import GradCAM
+from scripts.stage_classification import GradCAM
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
@@ -19,7 +19,7 @@ from torchcam.utils import overlay_mask
 from torchvision.transforms.functional import gaussian_blur
 import torchvision.transforms as T
 
-from scripts.Stage_final import ROPNet
+from scripts.stage_classification import ROPNet
 from scripts.validation import retina_score
 from scripts.train_segmentation import VesselUNet, preprocess_retina
 
