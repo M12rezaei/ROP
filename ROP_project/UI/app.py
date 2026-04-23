@@ -119,7 +119,7 @@ def load_models():
     stage_model = ROPNet().to(DEVICE)
 
     stage_path = os.path.join(BASE_DIR, "..", "results", "final_stage_model.pt")
-    checkpoint = torch.load(stage_path, map_location=DEVICE)
+    checkpoint = torch.load(stage_path, map_location=DEVICE, weights_only=False)
 
     state_dict = checkpoint.get("model", checkpoint)
     temperature = checkpoint.get("temperature", 1.0)
@@ -135,8 +135,8 @@ def load_models():
     stage_model.eval()
 
     unet = VesselUNet().to(DEVICE)
-    unet_path = os.path.join(BASE_DIR, "..", "vessel_unet_512.pt")
-    unet.load_state_dict(torch.load(unet_path, map_location=DEVICE))
+    unet_path = os.path.join(BASE_DIR, "..","results", "vessel_unet_512.pt")
+    unet.load_state_dict(torch.load(unet_path, map_location=DEVICE, weights_only=False))
     unet.eval()
 
     cam_extractor = GradCAM(stage_model)
@@ -190,7 +190,7 @@ def get_mask(unet, img):
     # keep soft mask (NO hard thresholding)
     mask = cv2.resize(pred.cpu().numpy(), (IMG_SIZE, IMG_SIZE))
 
-    # normalize instead of binarize
+    # normalize soft mask for Grad-CAM
     mask = (mask - mask.min()) / (mask.max() + 1e-6)
 
     return torch.tensor(mask).to(DEVICE)
@@ -236,45 +236,44 @@ def predict(stage_model, unet, img, ga, bw, cam_extractor=None, overlay_fn=None,
     cam_img = None
     if show_cam and cam_extractor:
         stage_model.zero_grad()
-        cam_class_idx = pred if pred < logits_ord.shape[1] else logits_ord.shape[1] - 1
-        #activation_map = cam_extractor(cam_class_idx, logits_ord)
-        #cam_map = np.squeeze(activation_map[0].detach().cpu().numpy())
-        cam_map = cam_extractor.generate(x, clinical, cam_class_idx)[0]
 
-        # Resize CAM to original image size
-        cam_map = cv2.resize(cam_map, (img.size[0], img.size[1]), interpolation=cv2.INTER_LINEAR)
+        # Use probability directly (clinically meaningful)
+        cam_map = cam_extractor.generate(x, clinical, pred)[0]
 
-        # HARD retina boundary (prevents leakage)
+        # --- Normalize ---
+        cam_map = np.nan_to_num(cam_map)
+        cam_map = np.clip(cam_map, 0, None)
+        cam_map -= cam_map.min()
+        cam_map /= (cam_map.max() + 1e-6)
+
+        # --- Resize to original image ---
+        cam_map = cv2.resize(
+            cam_map,
+            (img.size[0], img.size[1]),
+            interpolation=cv2.INTER_CUBIC
+        )
+
+        # --- Masks ---
         hard_mask = get_circular_retina_mask(cam_map.shape)
-
-        # soft vessel mask (kept as guidance, not boundary)
         soft_mask = get_retina_mask_for_cam(mask, (img.size[0], img.size[1]))
 
-        # combine: HARD × SOFT
-        final_mask = hard_mask * (soft_mask > 0.2).astype(np.float32)
+        # Stronger constraint
+        final_mask = hard_mask * (soft_mask ** 1.5)
 
+        # Remove weak regions
+        final_mask[final_mask < 0.2] = 0
         cam_map = cam_map * final_mask
 
-        # Smooth CAM: median + Gaussian to remove moiré
+        # --- Smooth ---
         cam_map = cv2.medianBlur((cam_map*255).astype(np.uint8), 9) / 255.0
-        cam_map = cv2.GaussianBlur(cam_map, (21,21), 0)
+        cam_map = cv2.GaussianBlur(cam_map, (15,15), 0)
 
-        # Normalize 0-1
-        cam_map = np.nan_to_num(cam_map)
+        # --- Clinical suppression for Normal ---
+        if pred == 0:
+            cam_map = cam_map * 0.3   # suppress globally
+            cam_map[cam_map < 0.4] = 0
 
-        cam_map = np.nan_to_num(cam_map)
-
-        cam_map = np.clip(cam_map, 0, None)
-        cam_map = cam_map - cam_map.min()
-
-        cam_map = cam_map / (cam_map.max() + 1e-6)
-
-        # force zero outside retina again (final safety)
-        cam_map = cam_map * final_mask
-
-        # Overlay as light heatmap
-        #cam_img = np.array(overlay_light_cam(img, cam_map, alpha=0.3))
-        cam_img = cam_map
+        cam_map = np.clip(cam_map, 0, 1)
     return pred, probs_np, mask.cpu().numpy(), cam_map
 
 def referral(label_name):

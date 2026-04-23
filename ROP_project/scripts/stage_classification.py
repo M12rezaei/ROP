@@ -11,6 +11,8 @@ import torch, torch.nn as nn, torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from torch.utils.data import Dataset, DataLoader
 import timm
+import random
+
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
@@ -95,10 +97,6 @@ def to_ordinal(labels, num_classes):
 # Seed for reproducibility
 # ========================
 def set_seed(seed=42):
-    import random
-    import numpy as np
-    import torch
-
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -1070,16 +1068,16 @@ def train_fold(df, pt_dir, fold, args, path_to_pid, class_weights=None, patience
         # =========================
         # SOFT MASK (image-based fallback)
         # =========================
+        # Create a soft anatomical mask
         gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
         _, soft_mask = cv2.threshold(gray, 0.05, 1, cv2.THRESH_BINARY)
+
+        # Smooth the mask to ensure Grad-Cam gradinets remain continuous
         soft_mask = cv2.GaussianBlur(soft_mask.astype(np.float32), (31,31), 0)
         soft_mask = soft_mask / (soft_mask.max() + 1e-6)
 
-        # =========================
-        # COMBINE MASKS
-        # =========================
+        # Combine geometric (hard) and anatomical (soft) masks
         final_mask = hard_mask * soft_mask
-
         cam = cam * final_mask
 
         # =========================
