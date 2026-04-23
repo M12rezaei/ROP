@@ -341,7 +341,19 @@ if st.session_state.page == "upload":
 
         show_cam = st.checkbox("Show Grad-CAM", value=True)
 
-    if st.button("Run Analysis", key="run_analysis"):
+        # Flexible spacer
+        st.markdown(
+            """
+            <div style="flex-grow: 1; min-height: 150px;"></div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        col_left, col_center, col_right = st.columns([2, 1, 2])
+
+        with col_center:
+            run_clicked = st.button("Run Analysis", key="run_analysis")
+
 
         # 1. Check image
         if st.session_state.uploaded_file is None:
