@@ -16,28 +16,27 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors as rl_colors
 from reportlab.lib.units import cm
  
+
 from scripts.stage_classification import GradCAM, ROPNet
 from scripts.validation import retina_score
 from scripts.train_segmentation import VesselUNet, preprocess_retina
 from style import apply_style, render_header, render_footer, render_step_bar, render_referral_badge, render_confidence_bar, render_prob_breakdown
  
-# ─────────────────────────────────────────────────────────────────────────────
+
 # CONFIG
-# ─────────────────────────────────────────────────────────────────────────────
 IMG_SIZE    = 224
 NUM_CLASSES = 3
 CLASS_NAMES = ["Normal", "Mild", "Severe"]
 K           = NUM_CLASSES - 1
 DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
 NORMALIZE   = T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-# ─────────────────────────────────────────────────────────────────────────────
+
 # MODEL LOADING
-# ─────────────────────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_models():
     BASE_DIR = os.path.dirname(__file__)
  
-    # ── Stage model ──
+    # Stage model
     stage_model = ROPNet().to(DEVICE)
     stage_path  = os.path.join(BASE_DIR, "..", "results", "final_stage_model.pt")
     checkpoint  = torch.load(stage_path, map_location=DEVICE, weights_only=False)
@@ -53,7 +52,7 @@ def load_models():
     stage_model.load_state_dict(filtered_dict, strict=False)
     stage_model.eval()
  
-    # ── U-Net ──
+    # U-Net
     unet      = VesselUNet().to(DEVICE)
     unet_path = os.path.join(BASE_DIR, "..", "results", "vessel_unet_512.pt")
     unet.load_state_dict(torch.load(unet_path, map_location=DEVICE, weights_only=False))
@@ -62,10 +61,8 @@ def load_models():
     cam_extractor = GradCAM(stage_model)
     return stage_model, unet, cam_extractor, temperature
  
- 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # PREPROCESSING
-# ─────────────────────────────────────────────────────────────────────────────
 def ben_graham(x: torch.Tensor) -> torch.Tensor:
     """Fix: kernel_size must be a list, not a scalar."""
     blur = gaussian_blur(x, kernel_size=31)
@@ -106,10 +103,7 @@ def ordinal_probs_from_logits(logits: torch.Tensor) -> torch.Tensor:
     probs[:, -1] = cumulative[:, -1]
     return torch.clamp(probs, 1e-6, 1.0)
  
- 
-# ─────────────────────────────────────────────────────────────────────────────
 # GRAD-CAM HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
 def get_circular_mask(shape):
     h, w   = shape
     y, x   = np.ogrid[:h, :w]
@@ -148,10 +142,8 @@ def add_colorbar(img_pil: Image.Image, cam: np.ndarray, bar_w: int = 28) -> Imag
     combined  = np.concatenate([img_np, cbar_rgb], axis=1)
     return Image.fromarray(combined)
  
- 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # PREDICTION
-# ─────────────────────────────────────────────────────────────────────────────
 def predict(stage_model, unet, img_pil, ga, bw, cam_extractor, temperature, show_cam=True):
     img_rgb = np.array(img_pil)
  
@@ -211,10 +203,7 @@ def predict(stage_model, unet, img_pil, ga, bw, cam_extractor, temperature, show
  
     return pred, probs_np, mask.cpu().numpy(), cam_map
  
- 
-# ─────────────────────────────────────────────────────────────────────────────
 # REFERRAL — FIX: receives label_name (str), not pred (int)
-# ─────────────────────────────────────────────────────────────────────────────
 def referral(label_name: str) -> str:
     if label_name == "Severe":
         return "URGENT REFERRAL"
@@ -222,10 +211,8 @@ def referral(label_name: str) -> str:
         return "MONITOR CLOSELY"
     return "ROUTINE FOLLOW-UP"
  
- 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # CONFIDENCE HELPER
-# ─────────────────────────────────────────────────────────────────────────────
 SEVERITY_COLORS = {
     "Severe": "#DC2626",
     "Mild":   "#F59E0B",
@@ -251,10 +238,8 @@ def apply_safety_override(ref: str, confidence: float) -> str:
         return ref + " (Low Confidence — Verify)"
     return ref
  
- 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # PDF EXPORT — FIX: actually builds the document
-# ─────────────────────────────────────────────────────────────────────────────
 def build_pdf(img_pil, cam_pil, label_name, ref_text, confidence, probs, ga, bw) -> bytes:
     buf    = io.BytesIO()
     doc    = SimpleDocTemplate(buf, pagesize=A4,
@@ -352,16 +337,14 @@ def build_pdf(img_pil, cam_pil, label_name, ref_text, confidence, probs, ga, bw)
     buf.seek(0)
     return buf.read()
  
- 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # PAGE: UPLOAD
-# ─────────────────────────────────────────────────────────────────────────────
 def page_upload(stage_model, unet, cam_extractor, temperature):
     render_step_bar(1)
  
     col_img, col_clin = st.columns([1, 1], gap="large")
  
-    # ── Image upload card ──
+    # Image upload card
     with col_img:
         st.markdown('<div class="card"><div class="card-title">📷 Retinal Image</div>', unsafe_allow_html=True)
         uploaded = st.file_uploader(
@@ -376,7 +359,7 @@ def page_upload(stage_model, unet, cam_extractor, temperature):
                      caption="Uploaded image preview")
         st.markdown('</div>', unsafe_allow_html=True)
  
-    # ── Clinical data card ──
+    # Clinical data card
     with col_clin:
         st.markdown('<div class="card"><div class="card-title">🏥 Clinical Parameters</div>',
                     unsafe_allow_html=True)
@@ -398,17 +381,17 @@ def page_upload(stage_model, unet, cam_extractor, temperature):
                                help="Produces a heatmap showing which retinal regions influenced the prediction. Adds ~2–3 seconds to analysis.")
  
         st.markdown('<hr style="margin:18px 0">', unsafe_allow_html=True)
- 
+        msg_box = st.empty()  # placeholder for validation messages
         run = st.button("▶  Run Analysis", width="stretch")
         st.markdown('</div>', unsafe_allow_html=True)
  
-    # ── Validation & run ──
+    # Validation & run
     if run:
         if st.session_state.get("uploaded_file") is None:
-            st.warning("⚠️  Please upload a retinal image before running.")
+            msg_box.warning("⚠️  Please upload a retinal image before running.")
             return
         if ga is None or bw is None:
-            st.warning("⚠️  Please enter both Gestational Age and Birth Weight.")
+            msg_box.warning("⚠️  Please enter both Gestational Age and Birth Weight.")
             return
  
         img = Image.open(st.session_state.uploaded_file).convert("RGB")
@@ -416,18 +399,23 @@ def page_upload(stage_model, unet, cam_extractor, temperature):
         # Quality validation
         is_valid, msg = retina_score(img, unet, DEVICE)
         if not is_valid:
-            st.error(f"❌  Image quality check failed: {msg}")
+            msg_box.error(f"❌  Image quality check failed: {msg}")
             return
  
         with st.spinner("Step 1 / 2 — Generating vessel mask…"):
             # Pre-run mask generation separately to allow step feedback
             pass  # mask is generated inside predict()
  
+
         with st.spinner("Step 2 / 2 — Running classification and Grad-CAM…"):
-            pred, probs, mask, cam_map = predict(
-                stage_model, unet, img, ga, bw,
-                cam_extractor, temperature, show_cam=show_cam
-            )
+            try:
+                pred, probs, mask, cam_map = predict(
+                    stage_model, unet, img, ga, bw,
+                    cam_extractor, temperature, show_cam=show_cam
+                )
+            except Exception as e:
+                msg_box.error(f"❌ Analysis failed: {str(e)}")
+                return
  
         label_name = CLASS_NAMES[pred]
         ref_text   = referral(label_name)           # FIX: pass string not int
@@ -448,11 +436,8 @@ def page_upload(stage_model, unet, cam_extractor, temperature):
         }
         st.session_state.page = "result"
         st.rerun()
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # PAGE: RESULTS
-# ─────────────────────────────────────────────────────────────────────────────
 def page_result():
     data       = st.session_state.result
     label_name = data["label_name"]
@@ -463,7 +448,7 @@ def page_result():
  
     render_step_bar(3)
  
-    # ── Top row: back + export ──
+    # Top row: back + export
     nav_l, nav_r = st.columns([5, 2])
     with nav_l:
         if st.button("← Back to Upload", use_container_width=False):
@@ -486,7 +471,7 @@ def page_result():
             )
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            # ── Hamburger popover ──
+            # Hamburger popover
             with st.popover("☰  Export", use_container_width=False):
                 st.markdown(
                     '<div style="font-size:12px;font-weight:600;color:#94A3B8;'
@@ -514,7 +499,7 @@ def page_result():
     st.markdown("<br>", unsafe_allow_html=True)
 
  
-    # ── Two-column results layout ──
+    # Two-column results layout
     left_col, right_col = st.columns([2, 3], gap="large")
  
     with left_col:
@@ -609,7 +594,7 @@ def page_result():
  
         st.markdown("</div>", unsafe_allow_html=True)
  
-    # ── New analysis ──
+    # New analysis
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("＋  New Analysis", width="stretch"):
         for key in ["uploaded_file", "result"]:
@@ -617,10 +602,7 @@ def page_result():
         st.session_state.page = "upload"
         st.rerun()
  
- 
-# ─────────────────────────────────────────────────────────────────────────────
 # MAIN
-# ─────────────────────────────────────────────────────────────────────────────
 def main():
     st.set_page_config(
         page_title="ROP Screening System",

@@ -33,8 +33,6 @@ NUM_CLASSES = 3
 def tensor_hash(t):
     return hashlib.md5(t.cpu().numpy().tobytes()).hexdigest()
 
-def tensor_hash(t):
-    return hashlib.md5(t.cpu().numpy().tobytes()).hexdigest()
 
 # --------------------------
 # Rotations
