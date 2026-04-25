@@ -503,7 +503,7 @@ def page_result():
                     help="Grad-CAM overlay with colour bar",
                 )
                 st.download_button(
-                    label="📄  Download PDF Report",
+                    label="Download PDF Report",
                     data=pdf_bytes,
                     file_name=f"ROP_Report_{timestamp}.pdf",
                     mime="application/pdf",
