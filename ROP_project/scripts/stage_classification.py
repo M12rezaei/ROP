@@ -855,11 +855,11 @@ def main():
     parser.add_argument("--shuffle_labels", action="store_true")
     parser.add_argument("--pt_dir", required=True, help="Directory with cached .pt files")
     parser.add_argument("--csv_file", required=True, help="CSV with patient_id, label for folds")
-    parser.add_argument("--folds", type=int, default=5)
+    parser.add_argument("--folds", type=int, default=3)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=2e-4)
-    parser.add_argument("--out_dir", default="./stage_results_final")
+    parser.add_argument("--out_dir", default="./results_final")
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
     
