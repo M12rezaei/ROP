@@ -114,7 +114,8 @@ def get_circular_mask(shape):
  
 def get_vessel_soft_mask(mask_tensor: torch.Tensor, target_size):
     """Build a smooth soft mask from the vessel mask tensor for CAM refinement."""
-    m = (mask_tensor.cpu().numpy() > 0).astype(np.uint8)
+    #m = (mask_tensor.cpu().numpy() > 0).astype(np.uint8)
+    m = mask_tensor.cpu().numpy()
     m = cv2.dilate(m, np.ones((15, 15), np.uint8), iterations=1)
     m = cv2.GaussianBlur(m.astype(np.float32), (21, 21), 0)
     m = cv2.resize(m, target_size, interpolation=cv2.INTER_LINEAR)
@@ -157,29 +158,41 @@ def predict(stage_model, unet, img_pil, ga, bw, cam_extractor, temperature, show
         x.requires_grad_(True)
  
     # Step 3 — normalise clinical inputs with physiological bounds
-    ga_norm  = (ga - 22) / (40 - 22)
-    bw_norm  = (bw - 400) / (2500 - 400)
+    ga = np.clip(ga, 22, 40)
+    bw = np.clip(bw, 400, 2500)
+
+    ga_norm = (ga - 22) / 18.0
+    bw_norm = (bw - 400) / 2100.0
+
     clinical = torch.tensor([[ga_norm, bw_norm]], device=DEVICE).float()
- 
-    # Step 4 — forward pass
+
+    # Step 4 — forward
     stage_model.eval()
     with torch.set_grad_enabled(True):
         logits = stage_model(x, clinical)
-        logits = logits / temperature          # temperature scaling
+        logits = logits / temperature
         probs  = ordinal_probs_from_logits(logits)
-        pred   = int(probs.argmax(dim=1).item())
-        probs_np = probs.detach().cpu().numpy()[0]
- 
+
+        pred      = int(probs.argmax(dim=1).item())
+        probs_np  = probs.detach().cpu().numpy()[0]
+
+    # Confidence stabilization
+    confidence = float(np.clip(probs_np[pred], 0.0, 0.99))
+
     # Step 5 — Grad-CAM
     cam_map = None
     if show_cam and cam_extractor:
         stage_model.zero_grad()
         cam_map = cam_extractor.generate(x, clinical, pred)[0]
- 
+
         cam_map = np.nan_to_num(cam_map)
-        cam_map = np.clip(cam_map, 0, None)
+        cam_map = np.maximum(cam_map, 0)
+
         cam_map -= cam_map.min()
         cam_map /= (cam_map.max() + 1e-6)
+
+        if np.max(cam_map) < 0.05:
+            cam_map = None
  
         tw, th   = img_pil.size          # PIL: (width, height)
         h_mask   = cv2.resize(get_circular_mask(cam_map.shape), (tw, th))
@@ -203,7 +216,7 @@ def predict(stage_model, unet, img_pil, ga, bw, cam_extractor, temperature, show
  
     return pred, probs_np, mask.cpu().numpy(), cam_map
  
-# REFERRAL — FIX: receives label_name (str), not pred (int)
+# REFERRAL: receives label_name (str), not pred (int)
 def referral(label_name: str) -> str:
     if label_name == "Severe":
         return "URGENT REFERRAL"
@@ -239,7 +252,7 @@ def apply_safety_override(ref: str, confidence: float) -> str:
     return ref
  
 
-# PDF EXPORT — FIX: actually builds the document
+# PDF EXPORT: actually builds the document
 def build_pdf(img_pil, cam_pil, label_name, ref_text, confidence, probs, ga, bw) -> bytes:
     buf    = io.BytesIO()
     doc    = SimpleDocTemplate(buf, pagesize=A4,
