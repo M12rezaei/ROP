@@ -1,10 +1,5 @@
 # CPU/GPU-FRIENDLY ROP STAGE CLASSIFICATION
 # Using cached .pt files (images + masks + clinical data)
-# Ensemble: MaxViT + EfficientNet + Ben Graham + Mask
-# Includes MIL, Grad-CAM, ECE, Temp Scaling, metrics, patient aggregation
-# ============================================================
-# CPU/GPU-FRIENDLY ROP STAGE CLASSIFICATION
-# Using cached .pt files (images + masks + clinical data)
 # Ensemble: convNeXt + EfficientNet + Ben Graham + Mask
 # Includes MIL, Grad-CAM, ECE, Temp Scaling, metrics, patient aggregation
 # ============================================================
@@ -696,7 +691,7 @@ def train_fold(
                 print(f"Early stopping at epoch {epoch}")
                 break
 
-    # ── Save artefacts ───────────────────────────────────────────────────────
+    # Save artefacts 
     for fname, obj in [("history.json", history),
                         ("metrics_best.json", best_metrics),
                         ("metrics_last.json", {k: history[k][-1] for k in history})]:
@@ -708,7 +703,7 @@ def train_fold(
 
     print(f"\n Best Epoch: {best_epoch} | Best QWK: {best_qwk:.4f}")
 
-    # ── Final evaluation pass with best weights ──────────────────────────────
+    # Final evaluation pass with best weights 
     model.load_state_dict(torch.load(os.path.join(out, "best.pt")))
     model.eval()
 
@@ -757,7 +752,7 @@ def final_training(
     n_calib  = max(1, int(0.15 * n_total))
     n_train  = n_total - n_calib
 
-    rng           = torch.Generator().manual_seed(42)
+    rng = torch.Generator().manual_seed(42)
     # Patient-level split (NO LEAKAGE)
     all_patients = df["patient_id"].astype(str).unique()
     rng_np = np.random.RandomState(42)
