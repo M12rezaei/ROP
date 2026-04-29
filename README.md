@@ -1,12 +1,8 @@
 ROP-Screening-System: Multimodal Deep Learning for ROP Classification
 
 
-
-
-
-
  **Project Overview**
-**Retinopathy of Prematurity (ROP) **is a leading cause of preventable childhood blindness. This project presents a lightweight, explainable multimodal AI system for automated ROP stage classification.
+**Retinopathy of Prematurity (ROP)**is a leading cause of preventable childhood blindness. This project presents a lightweight, explainable multimodal AI system for automated ROP stage classification.
 
 The system integrates:
 
@@ -15,7 +11,7 @@ Clinical data (Gestational Age & Birth Weight)
 
 to improve diagnostic reliability, particularly in resource-limited neonatal environments.
 
-** Key Features**
+**Key Features**
 Multimodal Learning: Combines image + clinical data for improved performance
 Dual Backbone Model: ConvNeXt-Tiny + EfficientNet-B3 ensemble
 Vessel-Aware Input: U-Net generated vessel mask as 4th channel
@@ -47,18 +43,18 @@ Prediction + probabilities
 Clinical recommendation
 Export (PNG / PDF)
 
-** Getting Started**
+**Getting Started**
 Prerequisites
 Python 3.9+
 PyTorch
 Streamlit
 (Optional) CUDA-enabled GPU for training
-Installation
+**Installation**
 git clone https://github.com/your-username/ROP-Screening-System.git
 cd ROP-Screening-System
 pip install -r requirements.txt
 Run the Application
-streamlit run UI/app_v3.py
+streamlit run UI/app.py
 ** Usage**
 Upload a retinal fundus image
 Enter:
@@ -73,12 +69,12 @@ Confidence score
 Grad-CAM heatmap
 Clinical recommendation
 
-** Ethical Compliance & Safety**
+**Ethical Compliance & Safety**
 Data Privacy: Follows GDPR principles (anonymised datasets)
 Clinical Safety: High-recall tuning to reduce false negatives
 Human-in-the-Loop: Final decision remains with clinician
 Transparency: Model Card documents bias, limitations, and performance
-** Project Structure**
+**Project Structure**
 ROP-Screening-System/
 │── scripts/              # Models and training code
 │── UI/                   # Streamlit interface
@@ -90,8 +86,8 @@ ROP-Screening-System/
 
 This project is licensed under the MIT License.
 
-** Contact**
+**Contact**
 
 Lead Developer: Mahbouba Rezaei
-Project: ROP Stage Classification (BSc Final Year Project)
+Project: ROP Stage Classification (BEng Final Year Project)
 Academic Year: 2025–2026
