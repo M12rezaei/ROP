@@ -74,15 +74,7 @@ Data Privacy: Follows GDPR principles (anonymised datasets)
 Clinical Safety: High-recall tuning to reduce false negatives
 Human-in-the-Loop: Final decision remains with clinician
 Transparency: Model Card documents bias, limitations, and performance
-**Project Structure**
-ROP-Screening-System/
-│── scripts/              # Models and training code
-│── UI/                   # Streamlit interface
-│── results/              # Saved models
-│── data/                 # Dataset references
-│── docs/                 # Model card and documentation
-│── README.md
- License
+
 
 This project is licensed under the MIT License.
 
