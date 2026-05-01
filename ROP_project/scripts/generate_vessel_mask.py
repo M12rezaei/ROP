@@ -10,6 +10,8 @@ from tqdm import tqdm
 class VesselUNet(nn.Module):
     def __init__(self):
         super().__init__()
+
+        # Convolutional block with two conv layers, batch norm, and ReLU
         def block(in_c, out_c):
             return nn.Sequential(
                 nn.Conv2d(in_c, out_c, 3, padding=1),
@@ -17,6 +19,7 @@ class VesselUNet(nn.Module):
                 nn.Conv2d(out_c, out_c, 3, padding=1),
                 nn.BatchNorm2d(out_c), nn.ReLU(inplace=True),
             )
+        # Encoder path
         self.enc1, self.enc2, self.enc3 = block(3, 32), block(32, 64), block(64, 128)
         self.pool = nn.MaxPool2d(2)
         self.bottleneck = block(128, 256)
@@ -35,11 +38,25 @@ class VesselUNet(nn.Module):
         return self.out(d1)
 
 def preprocess_retina(img_bgr, target_size=512):
+
+    """
+    Preprocessing steps:
+    1. Resize image to fixed resolution
+    2. Extract green channel (best vessel contrast)
+    3. Apply CLAHE for local contrast enhancement
+    4. Convert to 3-channel format for U-Net input
+    """
     img_resized = cv2.resize(img_bgr, (target_size, target_size))
     green_ch = img_resized[:, :, 1]
+
+    # Apply CLAHE to improve vessel visibility under uneven lighting
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(green_ch)
+
+    # Convert grayscale → 3-channel (required for CNN input)
     img_final = cv2.merge([enhanced, enhanced, enhanced])
+
+    # Normalise pixel values to [0, 1]
     return img_final.astype(np.float32) / 255.0
 
 def run_generation():
@@ -63,7 +80,10 @@ def run_generation():
     model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=device))
     model.eval()
 
+    # Disable gradient computation for inference efficiency
     with torch.no_grad():
+
+        # Interate through dataset categories
         for tag, root in sources.items():
             path_root = Path(root)
             if not path_root.exists(): continue
@@ -77,9 +97,14 @@ def run_generation():
                 img_raw = cv2.imread(str(img_p))
                 h, w = img_raw.shape[:2]
                 img_proc = preprocess_retina(img_raw, 512)
+
+                # Convert to tensor format
                 x = torch.from_numpy(img_proc).permute(2,0,1).float().unsqueeze(0).to(device)
                 
+                # Forward pass through U-Net
                 pred = torch.sigmoid(model(x)).squeeze().cpu().numpy()
+
+                # threshold probability map to binary mask
                 mask = (pred > 0.4).astype(np.uint8) * 255
                 
                 # Resize to original image size
