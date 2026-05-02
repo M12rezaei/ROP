@@ -1,7 +1,7 @@
 ROP-Screening-System: Multimodal Deep Learning for ROP Classification
 
 
- **Project Overview**
+**Project Overview**
 **Retinopathy of Prematurity (ROP)**is a leading cause of preventable childhood blindness. This project presents a lightweight, explainable multimodal AI system for automated ROP stage classification.
 
 The system integrates:
@@ -51,7 +51,7 @@ Streamlit
 (Optional) CUDA-enabled GPU for training
 **Installation**
 git clone https://github.com/m12rezaei/ROP
-cd ROP-Screening-System
+cd ROP-project
 pip install -r requirements.txt
 Run the Application
 streamlit run UI/app.py
