@@ -50,7 +50,7 @@ PyTorch
 Streamlit
 (Optional) CUDA-enabled GPU for training
 **Installation**
-git clone https://github.com/your-username/ROP-Screening-System.git
+git clone https://github.com/m12rezaei/ROP
 cd ROP-Screening-System
 pip install -r requirements.txt
 Run the Application
