@@ -2,7 +2,7 @@ ROP-Screening-System: Multimodal Deep Learning for ROP Classification
 
 
 **Project Overview**
-**Retinopathy of Prematurity (ROP)**is a leading cause of preventable childhood blindness. This project presents a lightweight, explainable multimodal AI system for automated ROP stage classification.
+**Retinopathy of Prematurity (ROP)** is a leading cause of preventable childhood blindness. This project presents a lightweight, explainable multimodal AI system for automated ROP stage classification.
 
 The system integrates:
 
@@ -50,12 +50,12 @@ PyTorch
 Streamlit
 (Optional) CUDA-enabled GPU for training
 **Installation**
-git clone https://github.com/m12rezaei/ROP
-cd ROP-project
-pip install -r requirements.txt
-Run the Application
-streamlit run UI/app.py
-** Usage**
+-> git clone https://github.com/m12rezaei/ROP
+-> cd ROP-project
+-> pip install -r requirements.txt
+-> Run the Application
+-> streamlit run UI/app.py
+**Usage**
 Upload a retinal fundus image
 Enter:
 Gestational Age (22–40 weeks)
