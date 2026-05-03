@@ -19,7 +19,8 @@ def ben_graham(x):
     - Enhance contrast by scaling intensity
     - Clamp values to valid range [0,1]
     """
-    blur = gaussian_blur(x, kernel_size=31)
+
+    blur = gaussian_blur(x, kernel_size=[31, 31])
     return torch.clamp(4*x - 4*blur + 0.5, 0, 1)
 
 # Image transform: to tensor, resize, normalize

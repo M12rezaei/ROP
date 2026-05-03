@@ -142,16 +142,27 @@ def apply_clahe(img: torch.Tensor) -> torch.Tensor:
 
 # DATASET
 class ROPDatasetPT(Dataset):
+    """
+    Custom dataset that loads preprocessed .pt files.
+
+    Each sample contains:
+    - 4-channel image (RGB + vessel mask)
+    - Clinical features (GA, BW)
+    - Ordinal label
+    - Patient ID (for grouping / leakage checks)
+    """
     def __init__(self, pt_paths: list, augment: bool = False):
-        self.pt_paths = pt_paths
-        self.augment  = augment
+        self.pt_paths = pt_paths  # list of paths to .pt files
+        self.augment  = augment   # enable augmentation only during training
 
     def __len__(self) -> int:
         return len(self.pt_paths)
 
     def __getitem__(self, idx: int):
+        # Load cached tensor (fast I/O vs raw images)
         data = torch.load(self.pt_paths[idx], map_location="cpu")
 
+        # Extract image tensor
         img = data["img"].float()
 
         # Resize if cached at wrong resolution
@@ -168,21 +179,23 @@ class ROPDatasetPT(Dataset):
         # Augmentation — training only
         if self.augment:
             if np.random.rand() < 0.2:
-                img = apply_clahe(img)
+                img = apply_clahe(img)     # contrast enhancement
             if np.random.rand() < 0.5:
-                img = horizontal_flip(img)
+                img = horizontal_flip(img) # spatial invariance
             if np.random.rand() < 0.5:
-                img = random_rotate(img)
+                img = random_rotate(img)   # rotation robustness
             if np.random.rand() < 0.4:
-                img = color_jitter(img)
+                img = color_jitter(img)    # lighting variation
             if np.random.rand() < 0.3:
-                img = gaussian_noise(img)
+                img = gaussian_noise(img)  # noise robustness
             if np.random.rand() < 0.3:
-                img = random_gamma(img)
+                img = random_gamma(img)    # intensity scaling
 
-        # Clinical features — normalised with fixed physiological bounds
+        # Clinical features — normalized with fixed physiological bounds
         ga = float(np.clip(data.get("ga", 30), 22, 40))
         bw = float(np.clip(data.get("bw", 1200), 400, 2500))
+
+        # Normalize to [0, 1]
         clinical = torch.tensor(
             [(ga - 22) / 18.0, (bw - 400) / 2100.0],
             dtype=torch.float32
@@ -196,6 +209,15 @@ class ROPDatasetPT(Dataset):
 
 # MODEL: ROPNet
 class ROPNet(nn.Module):
+    """
+    Multimodal ROP classification model.
+
+    Components:
+    - Dual CNN backbones (ConvNeXt + EfficientNet)
+    - Spatial attention pooling
+    - Clinical feature fusion
+    - Ordinal classification head
+    """
     def __init__(self):
         super().__init__()
 
@@ -204,22 +226,27 @@ class ROPNet(nn.Module):
         self.backbone2 = timm.create_model(
             "efficientnet_b3", pretrained=True, features_only=True, in_chans=4)
 
+        # Infer output feature channels dynamically
         with torch.no_grad():
             dummy = torch.randn(1, 4, 224, 224)
             f1_ch = self.backbone1(dummy)[-1].shape[1]
             f2_ch = self.backbone2(dummy)[-1].shape[1]
 
+        # Projection heads + attention for each backbone
         self.conv_head1 = nn.Conv2d(f1_ch, 256, kernel_size=1)
         self.conv_head2 = nn.Conv2d(f2_ch, 256, kernel_size=1)
 
+        # Separate attention layers for each backbone to allow different spatial focus
         self.attn1 = nn.Sequential(
             nn.Conv2d(256, 128, 1), nn.ReLU(inplace=True), nn.Conv2d(128, 1, 1))
         self.attn2 = nn.Sequential(
             nn.Conv2d(256, 128, 1), nn.ReLU(inplace=True), nn.Conv2d(128, 1, 1))
 
+        # Clinical feature MLP
         self.clinical_fc = nn.Sequential(
             nn.Linear(2, 64), nn.ReLU(inplace=True), nn.Dropout(0.2))
 
+        # Normalization layers for each modality before fusion
         self.norm_img1 = nn.LayerNorm(256)
         self.norm_img2 = nn.LayerNorm(256)
         self.norm_clin = nn.LayerNorm(64)
@@ -228,31 +255,64 @@ class ROPNet(nn.Module):
         self.ordinal_head = nn.Linear(256 + 256 + 64, NUM_CLASSES - 1)
 
     def attention_pool(self, f: torch.Tensor, attn_layer: nn.Module) -> torch.Tensor:
+        """
+        Applies spatial attention pooling.
+
+        Produces a weighted feature vector focusing on important regions.
+        """
         attn = attn_layer(f)
         B, _, H, W = attn.shape
+
+        # Flatten spatial dimensions
         attn = attn.view(B, -1)
-        attn = attn - attn.max(dim=1, keepdim=True)[0]   # numerical stability
+
+        # Numerical stability (prevent overflow in softmax)
+        attn = attn - attn.max(dim=1, keepdim=True)[0]  
+
+        # Convert to probability distribution
         attn = torch.softmax(attn, dim=1).view(B, 1, H, W)
+
+        # Normalize attention weights
         attn = attn / (attn.sum(dim=(2, 3), keepdim=True) + 1e-6)
+
+        # Weighted sum of features
         return (f * attn).sum(dim=(2, 3))
 
     def forward(self, x: torch.Tensor, clinical: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass combining image and clinical features.
+        """
+        # Backbone feature extraction + attention pooling
         f1 = self.norm_img1(self.attention_pool(self.conv_head1(self.backbone1(x)[-1]), self.attn1))
         f2 = self.norm_img2(self.attention_pool(self.conv_head2(self.backbone2(x)[-1]), self.attn2))
+
+        # Clinical branch
         c  = self.norm_clin(self.clinical_fc(clinical))
+
+        # Feature fusion + ordinal classification
         return self.ordinal_head(self.dropout(torch.cat([f1, f2, c], dim=1)))
 
 
 # TEMPERATURE SCALING
 class TempScaler(nn.Module):
+    """
+    Post-hoc calibration module.
+
+    adusts logits using a learnable temperature parameter
+    to impprove probability reliability
+    """
     def __init__(self):
         super().__init__()
         self.temperature = nn.Parameter(torch.ones(1))
 
     def forward(self, logits: torch.Tensor) -> torch.Tensor:
+        # Scale logits by temperature
         return logits / self.temperature
 
     def set_temperature(self, logits_ord: torch.Tensor, labels: torch.Tensor) -> None:
+        """
+        Optimize temperature using LBFGS on validation set
+        """
         optimizer = torch.optim.LBFGS([self.temperature], lr=0.01, max_iter=50)
         labels    = labels.long()
 
@@ -270,6 +330,11 @@ class TempScaler(nn.Module):
 
 # ECE
 def compute_ece(probs: np.ndarray, labels: np.ndarray, n_bins: int = 15) -> float:
+    """
+    Computes Expected Calibration Error (ECE) for multi-class classification.
+    measures difference between confidence and accuracy across confidence bins.
+    lower ECE indicates better calibrated probabilities, which is crucial for clinical trustworthiness.
+    """
     probs, labels   = np.asarray(probs), np.asarray(labels)
     confidences     = probs.max(axis=1)
     predictions     = probs.argmax(axis=1)
@@ -278,6 +343,8 @@ def compute_ece(probs: np.ndarray, labels: np.ndarray, n_bins: int = 15) -> floa
 
     for i in range(n_bins):
         lo, hi   = bins[i], bins[i + 1]
+
+        # Assign samples to bin; include right edge for last bin only
         in_bin   = (confidences >= lo) & (confidences <= hi) if i == 0 else \
                    (confidences > lo)  & (confidences <= hi)
         prop     = in_bin.mean()
@@ -291,32 +358,51 @@ def compute_ece(probs: np.ndarray, labels: np.ndarray, n_bins: int = 15) -> floa
 
 # GRAD-CAM
 class GradCAM:
+    """
+    Gradient-based Class Activation Mapping (Grad-CAM).
+
+    Highlights image regions influencing model predictions.
+    """
     def __init__(self, model: ROPNet):
         self.model = model
         self.grad  = None
         self.act   = None
+
+        # Register hooks on the first backbone's projection head (conv_head1)
         self.fwd_handle = model.conv_head1.register_forward_hook(self._fwd)
         self.bwd_handle = model.conv_head1.register_full_backward_hook(self._bwd)
 
-    def _fwd(self, _, __, output):           self.act  = output
-    def _bwd(self, _, __, grad_out):         self.grad = grad_out[0]
+    def _fwd(self, _, __, output):           self.act  = output  # Save activations for attention pooling layer
+    def _bwd(self, _, __, grad_out):         self.grad = grad_out[0] # Save gradients for attention pooling layer
 
     def generate(self, x: torch.Tensor, clinical: torch.Tensor, cls: int) -> np.ndarray:
+        """
+        Generates Grad-CAM heatmap for the specified class.
+        """
         self.model.eval()
         self.model.zero_grad(set_to_none=True)
+        # Forward pass to get logits
         probs = ordinal_probs_from_logits(self.model(x, clinical))
+
+        # Backward pass to get gradients for the target class
         probs[:, cls].sum().backward()
 
         if self.grad is None or self.act is None:
             raise RuntimeError("GradCAM hooks did not fire.")
 
+        # Compute importance weights
         weights = self.grad.mean(dim=(2, 3), keepdim=True)
+
+        # Normalize to [0, 1]
         cam     = F.relu((weights * self.act).sum(1))
         cam     = cam - cam.min()
         cam     = cam / (cam.max() + 1e-6)
         return cam.detach().cpu().numpy()
 
     def remove_hooks(self) -> None:
+        """
+        Clean up hooks to prevent memory leaks; call after Grad-CAM generation is complete
+        """
         self.fwd_handle.remove()
         self.bwd_handle.remove()
 
@@ -357,16 +443,33 @@ def check_duplicates(train_paths: list, val_paths: list) -> list:
 
 # PATIENT-LEVEL AGGREGATION
 def aggregate_patient_metrics(df_val: pd.DataFrame, stage_probs: np.ndarray) -> float:
+    """
+    Computes patient-level accuracy by aggregating predictions across images.
+
+    Instead of evaluating per image, predictions belonging to the same patient
+    are averaged, and a final class is assigned based on the mean probability.
+    This reflects real clinical scenarios where multiple images are available.
+    """
     df_val = df_val.copy()
     df_val["stage_pred_prob"] = list(stage_probs)
     preds, gts = [], []
+
+    # Group predictions by patient ID
     for _, g in df_val.groupby("patient_id"):
+        # Average probabilities across all images for this patient
         preds.append(np.argmax(np.stack(g["stage_pred_prob"].values).mean(axis=0)))
+        # Ground truth is assumed consistent per patient
         gts.append(g["label"].iloc[0])
     return accuracy_score(gts, preds)
 
 
 def patient_level_auc(df_val: pd.DataFrame, stage_probs: np.ndarray) -> float:
+    """
+    Computes patient-level AUC (Area Under Curve).
+
+    Probabilities are averaged per patient before calculating AUC,
+    ensuring evaluation reflects patient-level decision making.
+    """
     df_val = df_val.copy()
     df_val["probs"] = list(np.asarray(stage_probs))
     patient_probs, patient_labels = [], []
